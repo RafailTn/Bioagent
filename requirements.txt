@@ -1,0 +1,5 @@
+smolagents
+huggingface_hub
+langfuse
+openinference
+python-dotenv
