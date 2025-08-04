@@ -16,7 +16,3 @@ agent = CodeAgent(
     additional_authorized_imports=['datetime']
 )
 
-# Push the agent with dependencies
-agent.push_to_hub(
-    "Rafail01/AlfredAgent"
-)
