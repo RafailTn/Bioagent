@@ -36,3 +36,7 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# Other
+research-assistant.ipynb
+map-reduce.ipynb

@@ -11,13 +11,92 @@ import requests
 from PIL import Image
 from datetime import datetime, timedelta
 from pathlib import Path
-from smolagents import CodeAgent, InferenceClientModel, DuckDuckGoSearchTool, GoogleSearchTool, VisitWebpageTool
+from smolagents import CodeAgent, InferenceClientModel, DuckDuckGoSearchTool, GoogleSearchTool, VisitWebpageTool, tool
 from smolagents.utils import encode_image_base64, make_image_url
 from smolagents import OpenAIServerModel
 from dotenv import load_dotenv
+from Bio import Entrez
+import sys
 
 # Load environment variables
 load_dotenv()
+
+@tool
+def search_omics_data(query: str, species: str, year: int, email: str, max_results: int = 20):
+    """
+    Searches GEO and SRA for studies matching a query, species, and year.
+
+    Args:
+        query (str): The main search term (e.g., "breast cancer", "neurodevelopment").
+        species (str): The scientific name of the organism (e.g., "Homo sapiens", "Mus musculus").
+        year (int): The publication year to filter by.
+        email (str): Your email address (required by NCBI).
+        max_results (int): The maximum number of results to return per database. Defaults to 20.
+
+    Returns:
+        dict: A dictionary containing lists of results for 'GEO' and 'SRA'.
+              Returns None if an error occurs.
+    """
+    Entrez.email = email
+    
+    # Construct a precise search term using NCBI's query syntax
+    search_term = f'({query}) AND "{species}"[Organism] AND "{year}"[Publication Date]'
+    print(f"🔬 Using search term: {search_term}\n")
+
+    results = {"GEO": [], "SRA": []}
+    
+    try:
+        # --- 1. Search GEO Datasets (gds) ---
+        print("--- Searching GEO Datasets... ---")
+        handle_geo = Entrez.esearch(db="gds", term=search_term, retmax=max_results, sort="relevance")
+        record_geo = Entrez.read(handle_geo)
+        handle_geo.close()
+        
+        geo_ids = record_geo["IdList"]
+        if geo_ids:
+            print(f"Found {len(geo_ids)} GEO datasets. Fetching summaries...")
+            summary_handle_geo = Entrez.esummary(db="gds", id=",".join(geo_ids))
+            summary_geo = Entrez.read(summary_handle_geo)
+            summary_handle_geo.close()
+            # Format the GEO results
+            for summary in summary_geo:
+                results["GEO"].append({
+                    "ID": summary["Id"],
+                    "Title": summary["title"],
+                    "Summary": summary["summary"],
+                    "PubDate": summary["pubdate"],
+                })
+        else:
+            print("No matching GEO datasets found.")
+
+        # --- 2. Search Sequence Read Archive (SRA) ---
+        print("\n--- Searching SRA Experiments... ---")
+        handle_sra = Entrez.esearch(db="sra", term=search_term, retmax=max_results, sort="relevance")
+        record_sra = Entrez.read(handle_sra)
+        handle_sra.close()
+        
+        sra_ids = record_sra["IdList"]
+        if sra_ids:
+            print(f"Found {len(sra_ids)} SRA experiments. Fetching summaries...")
+            summary_handle_sra = Entrez.esummary(db="sra", id=",".join(sra_ids))
+            summary_sra = Entrez.read(summary_handle_sra)
+            summary_handle_sra.close()
+            # Format the SRA results
+            for summary in summary_sra:
+                results["SRA"].append({
+                    "Accession": summary["Accession"],
+                    "Title": summary["Title"],
+                    "Platform": summary["Platform"],
+                    "Study": summary["Study"],
+                })
+        else:
+            print("No matching SRA experiments found.")
+            
+    except Exception as e:
+        print(f"An error occurred: {e}", file=sys.stderr)
+        return None
+        
+    return results
 
 model = InferenceClientModel(
         model_id="Qwen/Qwen2.5-Coder-32B-Instruct",  # Free model
@@ -34,7 +113,7 @@ model = InferenceClientModel(
 web_agent = CodeAgent(
     model=model,
     tools=[
-        GoogleSearchTool(provider="serper"),
+        search_omics_data, 
         VisitWebpageTool(),
     ],
     name="web_agent",
