@@ -1,3 +1,5 @@
+import argparse
+import datetime
 from langgraph.graph import StateGraph, START, END
 from typing_extensions import TypedDict
 from IPython.display import Image, display
@@ -8,64 +10,121 @@ import os
 from Bio import Entrez
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_tavily import TavilySearch
+import xml.etree.ElementTree as ET
 load_dotenv()
 
-llm = ChatOllama(model="qwen3:1.7b")
-
-# --- 1. Set up your environment ---
-# IMPORTANT: Add your OpenAI API key to your environment variables
-# os.environ["OPENAI_API_KEY"] = "sk-..." 
-
-# Provide your email to NCBI (required for Entrez)
 Entrez.email = "rafailadam46@gmail.com"
+pi_llm = ChatOllama(model="llama3.1:8b")
 
-
-# --- 2. Define the core search function (the engine of our tool) ---
-def pubmed_search(keywords: str, year: int, pnum:str) -> dict:
+def pubmed_search_detailed(keywords: str, year: int, pnum: str) -> dict:
     """
-    Searches PubMed for papers with specific keywords from a given year.
-
-    Args:
-        keywords (str): The search terms (e.g., 'crispr gene editing').
-        year (int): The publication year to filter by.
-        pnum (str): The maximum number of papers to search for within ""
-
-    Returns:
-        A dictionary containing a list of paper titles and their IDs.
+    Search PubMed for papers and retrieve metadata + abstract/full text if available.
     """
-    print(f"🛠️ Agent is searching PubMed for '{keywords}' from {year}...")
-    
-    # Construct the search query for Entrez
-    search_term = f"({keywords}) AND {year}[pdat]"
-    
-    handle = Entrez.esearch(db="pubmed", term=search_term, retmax=pnum, sort="relevance")
+    print(f"🔍 Searching PubMed for '{keywords}' from {year}...")
+
+    handle = Entrez.esearch(
+        db="pubmed",
+        term=f"({keywords}) AND {year}[pdat]",
+        retmax=pnum,
+        sort="relevance"
+    )
     record = Entrez.read(handle)
     handle.close()
-    
-    if not record["IdList"]:
-        return {"results": "No papers found matching the criteria."}
-        
-    # Fetch summaries for the found IDs
+
     id_list = record["IdList"]
-    handle = Entrez.esummary(db="pubmed", id=",".join(id_list))
-    summaries = Entrez.read(handle)
+    if not id_list:
+        return {"results": "No papers found matching the criteria."}
+
+    handle = Entrez.efetch(db="pubmed", id=id_list, rettype="abstract", retmode="xml")
+    articles = Entrez.read(handle)["PubmedArticle"]
     handle.close()
-    
-    # Format the output
-    results = [
-        f"Title: {summary['Title']} (PMID: {summary['Id']})"
-        for summary in summaries
-    ]
+
+    results = []
+    for article in articles:
+        pmid = article['MedlineCitation']['PMID']
+        title = article['MedlineCitation']['Article']['ArticleTitle']
+        link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}"
+
+        abstract = "No abstract available."
+        if 'Abstract' in article['MedlineCitation']['Article']:
+            abstract_list = article['MedlineCitation']['Article']['Abstract']['AbstractText']
+            abstract = " ".join(abstract_list)
+
+        # --- Try to fetch full text from PubMed Central ---
+        full_text = None
+        try:
+            # LinkOut / PMC check
+            elink_handle = Entrez.elink(dbfrom="pubmed", id=pmid, linkname="pubmed_pmc")
+            elink_record = Entrez.read(elink_handle)
+            elink_handle.close()
+            if elink_record and "LinkSetDb" in elink_record[0] and elink_record[0]["LinkSetDb"]:
+                pmcid = elink_record[0]["LinkSetDb"][0]["Link"][0]["Id"]
+                pmc_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/"
+                try:
+                    r = requests.get(pmc_url)
+                    if r.status_code == 200:
+                        # crude full-text extraction
+                        full_text = r.text
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        results.append({
+            "title": title,
+            "pmid": pmid,
+            "abstract": abstract,
+            "full_text": full_text if full_text else "Not available.",
+            "link": link
+        })
+
     return {"papers": results}
 
-memory = MemorySaver() 
+# --- Memory and Agent ---
+memory = MemorySaver()
+
+system_prompt = SystemMessage(content=(
+    "You are a research assistant specialized in biomedical literature.\n"
+    "You have access to PubMed search. For each query:\n"
+    "- You can use TavilySearch to search for today's date."
+    "- Search for relevant papers (at least 5) prioritizing ones closer to the today's date, unless the user asks for publications within a specific year.\n"
+    "- Retrieve their abstracts.\n"
+    "- Attempt to fetch and summarize the full text if available in PubMed Central. If not, provide an as detailed as possible summary of the abstract, taking into account only the retrieved information.\n"
+    "- Always provide the PubMed ID (PMID) and link.\n"
+    "- If summarizing full text, highlight insights not in the abstract.\n"
+    "- Maintain conversation memory across turns, so user can refine search or ask follow-ups.\n"
+    "- Be concise but detailed in scientific explanation.\n"
+    "- Do not fabricate PMIDs or descriptions of articles, if you are not certain in the information you received from a paper, state so."
+))
+
 agent = create_react_agent(
-    model = llm,
-    tools=[pubmed_search],
+    model=pi_llm,
+    tools=[pubmed_search_detailed, TavilySearch()],
     checkpointer=memory
 )
-config = {"configurable": {"thread_id": "1"}}
-message = [HumanMessage(content="Find me 5 SVA (SINE-VNTR-Alu) element related papers for the year 2024 and summarize their findings. If you don't find enough papers from that year only, you are allowed to search for papers from the next and/or the previous year as well and summarize those instead. Each summary should be at least 200 words.")]
-result = agent.invoke({"messages":message}, config)
-print(result)
 
+# --- CLI Loop ---
+def main():
+    print("🧬 PubMed Research Assistant (CLI)")
+    print("Type 'exit' to quit.\n")
+    config = {"configurable": {"thread_id": "cli-thread"}}
+    # initialize with system prompt
+    while True:
+        try:
+            user_input = input(">>> ").strip()
+            if user_input.lower() in {"exit", "quit"}:
+                print("👋 Goodbye!")
+                break
+
+            messages = [system_prompt, HumanMessage(content=user_input)]
+            result = agent.invoke({"messages": messages}, config)
+            ai_message = result['messages'][-1].content
+            print(f"\n🤖 AI: {ai_message}\n")
+
+        except KeyboardInterrupt:
+            print("\n👋 Goodbye!")
+            break
+
+if __name__ == "__main__":
+    main()

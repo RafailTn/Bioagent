@@ -39,4 +39,9 @@ Thumbs.db
 
 # Other
 research-assistant.ipynb
+research-assistant.py
 map-reduce.ipynb
+practice.py
+research_agent.py
+Pubmed_agent_og.py
+rna_seq_smolagent_scrape.py
