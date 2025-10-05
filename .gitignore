@@ -45,3 +45,4 @@ practice.py
 research_agent.py
 Pubmed_agent_og.py
 rna_seq_smolagent_scrape.py
+pubmed_rag_db/
