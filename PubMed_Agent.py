@@ -110,7 +110,7 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
     all_results = []
     total_stored = 0
     total_full_text = 0
-    
+    all_papers = [] 
     for year in year_list:
         print(f"\n🔍 Searching PubMed for '{keywords}' in year {year}...")
         
@@ -216,8 +216,8 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
                 ]
                 
                 vectorstore.add_documents(documents)
-                year_papers.append(f"{title[:50]}... (PMID:{pmid})")
-                
+                year_papers.append(f"{title}-(PMID:{pmid})")
+                all_papers.append(f"{title}-(PMID:{pmid})\n")
             except Exception as e:
                 print(f"  ❌ Error processing article: {e}")
                 continue
@@ -235,8 +235,8 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
     summary = f"SEARCH COMPLETE:\n"
     summary += f"Total papers stored: {total_stored}\n"
     summary += f"Total with full text: {total_full_text}\n\n"
-    summary += "Results by year:\n" + "\n".join(all_results)
-    
+    summary += f"Titles with PMIDS: {all_papers}\n\n"
+    summary += f"TO GET PAPER DETAILS: You must now use search_rag_database with the keywords to retrieve the actual content."
     return summary
 
 
