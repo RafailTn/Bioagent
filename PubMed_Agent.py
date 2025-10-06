@@ -27,7 +27,7 @@ load_dotenv()
 
 Entrez.email = "your-email"
 pi_llm = ChatOllama(model="llama3.1:8b", temperature=0.1)
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+embeddings = HuggingFaceEmbeddings(model_name="NeuML/pubmedbert-base-embeddings")
 
 # ============================================
 # RAG SETUP - FIXED PERSISTENCE
@@ -69,16 +69,14 @@ def extract_authors(article):
                         name_parts.append(author['ForeName'])
                     elif 'Initials' in author:
                         name_parts.append(author['Initials'])
-                    
                     if name_parts:
                         authors.append(' '.join(name_parts))
     except (KeyError, TypeError):
         pass
-    
     return '; '.join(authors) if authors else "No authors listed"
 
 
-def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: int = 5) -> str:
+def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: int = 10) -> str:
     """
     Enhanced version that handles multiple years.
     
@@ -106,17 +104,14 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
     else:
         # Single year
         year_list = [years.strip()]
-    
     all_results = []
     total_stored = 0
     total_full_text = 0
     all_papers = [] 
     for year in year_list:
-        print(f"\n🔍 Searching PubMed for '{keywords}' in year {year}...")
-        
+        print(f"\nSearching PubMed for '{keywords}' in year {year}...")
         # Build search term
         search_term = f"({keywords}) AND {year}[pdat]"
-        
         # Search PubMed
         try:
             handle = Entrez.esearch(db="pubmed", term=search_term, retmax=pnum, sort="relevance")
@@ -125,12 +120,10 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
         except Exception as e:
             all_results.append(f"Year {year}: Search failed - {e}")
             continue
-        
         id_list = record["IdList"]
         if not id_list:
             all_results.append(f"Year {year}: No papers found")
             continue
-        
         # Fetch and process papers
         try:
             handle = Entrez.efetch(db="pubmed", id=id_list, rettype="abstract", retmode="xml")
@@ -139,64 +132,52 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
         except Exception as e:
             all_results.append(f"Year {year}: Fetch failed - {e}")
             continue
-        
         year_papers = []
         year_full_text = 0
-        
         for article in articles:
             try:
                 pmid = str(article['MedlineCitation']['PMID'])
                 title = article['MedlineCitation']['Article']['ArticleTitle']
                 authors = extract_authors(article)
-                
                 # Extract abstract
                 abstract = "No abstract available."
                 if 'Abstract' in article['MedlineCitation']['Article']:
                     abstract_list = article['MedlineCitation']['Article']['Abstract']['AbstractText']
                     abstract = " ".join(str(a) for a in abstract_list)
-                
                 # Try to fetch full text
                 full_text = None
                 try:
                     handle = Entrez.elink(dbfrom="pubmed", db="pmc", id=pmid, linkname="pubmed_pmc")
                     record = Entrez.read(handle)
                     handle.close()
-                    
                     if record and record[0].get("LinkSetDb"):
                         pmc_id_list = [link['Id'] for link in record[0]['LinkSetDb'][0]['Link']]
-                        
                         if pmc_id_list:
                             pmc_id = pmc_id_list[0]
                             handle = Entrez.efetch(db="pmc", id=pmc_id, rettype="full", retmode="xml")
                             xml_data = handle.read()
                             handle.close()
-                            
                             if xml_data:
                                 root = ET.fromstring(xml_data)
                                 text_parts = [p.text for p in root.findall('.//body//p') if p.text]
-                                
                                 if not text_parts:
                                     body = root.find('.//body')
                                     if body is not None:
                                         text_parts = [text for text in body.itertext() if text.strip()]
-                                
                                 if text_parts:
                                     full_text = ' '.join(text_parts)
                                     full_text = re.sub(r'\s+', ' ', full_text).strip()
                                     year_full_text += 1
-                                    print(f"  ✅ Full text retrieved for PMID:{pmid}")
+                                    print(f"  Full text retrieved for PMID:{pmid}")
                 except Exception:
                     pass
-                
                 # Create content for vector store
                 content = f"PMID: {pmid}\nTitle: {title}\n"
                 content += f"Authors: {authors}\nYear: {year}\n"
-                
                 if full_text:
                     content += f"\nFull Text: {full_text}"
                 else:
                     content += f"\nAbstract: {abstract}"
-                
                 # Split and store
                 chunks = text_splitter.split_text(content)
                 documents = [
@@ -214,14 +195,12 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
                     )
                     for i, chunk in enumerate(chunks)
                 ]
-                
                 vectorstore.add_documents(documents)
                 year_papers.append(f"{title}-(PMID:{pmid})")
                 all_papers.append(f"{title}-(PMID:{pmid})\n")
             except Exception as e:
                 print(f"  ❌ Error processing article: {e}")
                 continue
-        
         # Summary for this year
         if year_papers:
             all_results.append(
@@ -230,18 +209,16 @@ def pubmed_search_and_store_multi_year(keywords: str, years: str = None, pnum: i
             )
             total_stored += len(year_papers)
             total_full_text += year_full_text
-    
     # Final summary
     summary = f"SEARCH COMPLETE:\n"
     summary += f"Total papers stored: {total_stored}\n"
     summary += f"Total with full text: {total_full_text}\n\n"
     summary += f"Titles with PMIDS: {all_papers}\n\n"
-    summary += f"TO GET PAPER DETAILS: You must now use search_rag_database with the keywords to retrieve the actual content."
     return summary
 
 
 # Original function kept for backward compatibility
-def pubmed_search_and_store(keywords: str, year: str = None, pnum: int = 5) -> str:
+def pubmed_search_and_store(keywords: str, year: str = None, pnum: int = 10) -> str:
     """Original single-year search function."""
     return pubmed_search_and_store_multi_year(keywords, year, pnum)
 
@@ -268,27 +245,21 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
         Formatted search results with appropriate detail level
     """
     print(f"🔎 Searching RAG database for: '{query}'")
-    
     # Clean up query - remove "PMID:" prefix if present
     clean_query = query.replace("PMID:", "").replace("pmid:", "").strip()
-    
     # Check if this is a PMID query
     is_pmid_query = all(part.strip().isdigit() for part in clean_query.split(','))
-    
     # Check if this might be a title search (contains quotes or looks like a full title)
     is_title_search = ('"' in query or 
                       len(query.split()) > 5 or 
                       any(word in query.lower() for word in ['title:', 'paper:', 'article:']))
-    
     if is_pmid_query:
         # Direct PMID lookup - return FULL content
         pmids = [p.strip() for p in clean_query.split(',')]
         results = []
-        
         for pmid in pmids:
             # Get ALL chunks for this specific PMID
             pmid_filter = {"pmid": pmid}
-            
             # Try to use filter if available, otherwise search and filter manually
             try:
                 pmid_results = vectorstore.similarity_search(
@@ -300,32 +271,25 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
                 # Fallback if filter not supported
                 pmid_results = vectorstore.similarity_search(f"PMID: {pmid}", k=50)
                 pmid_results = [r for r in pmid_results if r.metadata.get('pmid') == pmid]
-            
             # Sort by chunk index to maintain order
             pmid_results.sort(key=lambda x: x.metadata.get('chunk_index', 0))
             results.extend([(doc, 1.0) for doc in pmid_results])
-        
         if not results:
             return f"No paper found with PMID: {clean_query}"
-            
     elif is_title_search:
         # Title search - try to find specific paper and return full content
         clean_title = query.replace('"', '').replace('title:', '').replace('paper:', '').strip()
-        
         # Search by title
         results = vectorstore.similarity_search_with_score(clean_title, k=30)
-        
         if results:
             # Find the best matching paper by title similarity
             papers_by_title = {}
             for doc, score in results:
                 title = doc.metadata.get("title", "")
                 pmid = doc.metadata.get("pmid", "unknown")
-                
                 # Calculate title similarity
                 title_lower = title.lower()
                 query_lower = clean_title.lower()
-                
                 # Check for exact or near-exact title match
                 if query_lower in title_lower or title_lower in query_lower:
                     if pmid not in papers_by_title:
@@ -335,12 +299,10 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
                             "similarity": score
                         }
                     papers_by_title[pmid]["docs"].append((doc, score))
-            
             # If we found a good title match, get ALL chunks for that paper
             if papers_by_title:
                 best_pmid = min(papers_by_title.keys(), 
                                key=lambda x: papers_by_title[x]["similarity"])
-                
                 # Get all chunks for this specific paper
                 all_chunks = vectorstore.similarity_search(
                     f"PMID: {best_pmid}", 
@@ -348,21 +310,16 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
                 )
                 all_chunks = [c for c in all_chunks if c.metadata.get('pmid') == best_pmid]
                 all_chunks.sort(key=lambda x: x.metadata.get('chunk_index', 0))
-                
                 results = [(doc, 1.0) for doc in all_chunks]
-            
     else:
         # General keyword search - return summaries of multiple papers
         results = vectorstore.similarity_search_with_score(query, k=num_results)
-    
     if not results:
         return "No relevant papers found in local database."
-    
     # Group results by PMID
     papers_dict = {}
     for doc, score in results:
         pmid = doc.metadata.get("pmid", "unknown")
-        
         if pmid not in papers_dict:
             papers_dict[pmid] = {
                 "pmid": pmid,
@@ -373,27 +330,20 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
                 "chunks": [],
                 "scores": []
             }
-        
         papers_dict[pmid]["chunks"].append(doc.page_content)
         papers_dict[pmid]["scores"].append(score)
-    
     # Format output based on query type
     output = []
-    
     # Determine detail level based on number of papers and query type
     is_single_paper_request = (is_pmid_query and len(papers_dict) == 1) or \
                              (is_title_search and len(papers_dict) == 1)
-    
     if is_single_paper_request:
         # Single paper requested - provide FULL content
         output.append(f"📄 DETAILED PAPER INFORMATION:\n")
-        
         for pmid, info in papers_dict.items():
             content_type = "FULL TEXT" if info['has_full_text'] else "ABSTRACT"
-            
             # Combine ALL chunks for complete content
             full_content = "\n\n".join(info['chunks'])
-            
             # Remove duplicate information that might appear across chunks
             lines = full_content.split('\n')
             seen_lines = set()
@@ -403,9 +353,7 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
                 if line_stripped and line_stripped not in seen_lines:
                     seen_lines.add(line_stripped)
                     clean_lines.append(line)
-            
             full_content = '\n'.join(clean_lines)
-            
             output.append(
                 f"\n{'='*60}\n"
                 f"PMID: {pmid}\n"
@@ -417,17 +365,13 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
                 f"COMPLETE CONTENT:\n\n{full_content}\n"
                 f"{'='*60}\n"
             )
-            
     elif len(papers_dict) <= 3:
         # Few papers - provide moderate detail
         output.append(f"Found {len(papers_dict)} relevant paper(s):\n")
-        
         for idx, (pmid, info) in enumerate(papers_dict.items(), 1):
             content_type = "full text" if info['has_full_text'] else "abstract"
-            
             # Provide first 2-3 chunks for moderate detail
             combined_content = "\n\n".join(info['chunks'][:3])
-            
             output.append(
                 f"\n--- PAPER {idx} ---\n"
                 f"PMID: {pmid}\n"
@@ -437,26 +381,20 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
                 f"Content Type: {content_type}\n"
                 f"\nContent Preview:\n{combined_content}\n"
             )
-            
     else:
         # Many papers - provide summaries
         output.append(f"Found {len(papers_dict)} relevant papers:\n")
-        
         for idx, (pmid, info) in enumerate(papers_dict.items(), 1):
             content_type = "full text" if info['has_full_text'] else "abstract"
-            
             # Just show a brief excerpt
             excerpt = info['chunks'][0][:500] + "..."
-            
             output.append(
                 f"\n[{idx}] PMID: {pmid} | {info['title'][:80]}...\n"
                 f"    Authors: {info['authors'][:50]}...\n"
                 f"    Year: {info['year']} | Type: {content_type}\n"
                 f"    Preview: {excerpt[:200]}...\n"
             )
-        
         output.append("\n💡 Tip: To see full details of a specific paper, search by its PMID.")
-    
     return "".join(output)
 
 search_rag_database_tool = tool(search_rag_database)
@@ -466,15 +404,11 @@ def check_rag_for_topic(keywords: str) -> str:
     try:
         collection = vectorstore._collection
         count = collection.count()
-        
         if count == 0:
             return "Database is empty. No papers stored yet."
-        
         results = vectorstore.similarity_search(keywords, k=5)
-        
         if not results:
             return f"No papers found for '{keywords}' in database ({count} total chunks)."
-        
         papers_info = {}
         for doc in results:
             pmid = doc.metadata.get("pmid")
@@ -483,13 +417,10 @@ def check_rag_for_topic(keywords: str) -> str:
                     "title": doc.metadata.get("title"),
                     "year": doc.metadata.get("year")
                 }
-        
         output = f"Found {len(papers_info)} relevant papers in database:\n"
         for pmid, info in papers_info.items():
             output += f"- PMID: {pmid} | {info['title'][:60]}... ({info['year']})\n"
-        
         return output
-        
     except Exception as e:
         return f"Error checking database: {e}"
 
@@ -500,14 +431,11 @@ def get_database_stats() -> str:
     try:
         collection = vectorstore._collection
         count = collection.count()
-        
         if count == 0:
             return "Database is empty (0 chunks, 0 papers)"
-        
         sample_results = vectorstore.similarity_search("", k=min(100, count))
         unique_pmids = set()
         unique_titles = set()
-        
         for doc in sample_results:
             pmid = doc.metadata.get("pmid")
             title = doc.metadata.get("title")
@@ -515,7 +443,6 @@ def get_database_stats() -> str:
                 unique_pmids.add(pmid)
             if title:
                 unique_titles.add(title[:50])
-        
         output = f"Database Statistics:\n"
         output += f"- Total chunks: {count}\n"
         output += f"- Estimated papers: {len(unique_pmids)}\n"
@@ -523,9 +450,7 @@ def get_database_stats() -> str:
             output += f"- Sample papers:\n"
             for title in list(unique_titles)[:3]:
                 output += f"  • {title}...\n"
-        
         return output
-        
     except Exception as e:
         return f"Error getting stats: {e}"
 
@@ -600,11 +525,11 @@ agent = create_react_agent(
 # ============================================
 
 def main():
-    print("🧬 PubMed Research Assistant")
+    print("PubMed Research Assistant")
     print("Commands: 'exit' to quit, 'stats' for database info, 'clear' to clear screen\n")
     
     stats_result = get_database_stats()
-    print(f"📚 {stats_result}\n")
+    print(f"{stats_result}\n")
     
     config = {"configurable": {"thread_id": "cli-thread"}}
     
@@ -613,11 +538,11 @@ def main():
             user_input = input(">>> ").strip()
             
             if user_input.lower() in {"exit", "quit"}:
-                print("👋 Goodbye!")
+                print("Goodbye!")
                 break
             
             if user_input.lower() == "stats":
-                print(f"\n📊 {get_database_stats()}\n")
+                print(f"\n{get_database_stats()}\n")
                 continue
             
             if user_input.lower() == "clear":
@@ -629,14 +554,14 @@ def main():
                 parts = user_input[10:].strip().split()
                 keywords = parts[0] if parts else "CRISPR"
                 years = parts[1] if len(parts) > 1 else "2022-2024"
-                print(f"\n🧪 Testing multi-year search: '{keywords}' for years {years}...")
+                print(f"\nTesting multi-year search: '{keywords}' for years {years}...")
                 result = pubmed_search_and_store_multi_year(keywords, years, pnum=3)
                 print(result)
-                print(f"\n📊 {get_database_stats()}\n")
+                print(f"\n{get_database_stats()}\n")
                 continue
             
             # Regular agent interaction
-            print("\n🤔 Processing...")
+            print("\nProcessing...")
             
             # Invoke agent with increased recursion limit for complex multi-year searches
             result = agent.invoke(
@@ -647,14 +572,14 @@ def main():
             # Print response
             for msg in reversed(result['messages']):
                 if isinstance(msg, AIMessage) and msg.content:
-                    print(f"\n🤖 AI: {msg.content}\n")
+                    print(f"\nAI: {msg.content}\n")
                     break
 
         except KeyboardInterrupt:
-            print("\n👋 Goodbye!")
+            print("\nGoodbye!")
             break
         except Exception as e:
-            print(f"\n❌ Error: {e}\n")
+            print(f"\nError: {e}\n")
             import traceback
             traceback.print_exc()
 
