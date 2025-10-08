@@ -25,7 +25,7 @@ from typing import List, Optional
 
 load_dotenv()
 
-Entrez.email = "rafailadam46@gmail.com"
+Entrez.email = "your-email"
 pi_llm = ChatOllama(model="llama3.1:8b", temperature=0.1)
 embeddings = HuggingFaceEmbeddings(model_name="FremyCompany/BioLORD-2023")
 
