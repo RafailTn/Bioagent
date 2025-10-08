@@ -25,9 +25,9 @@ from typing import List, Optional
 
 load_dotenv()
 
-Entrez.email = "your-email"
+Entrez.email = "rafailadam46@gmail.com"
 pi_llm = ChatOllama(model="llama3.1:8b", temperature=0.1)
-embeddings = HuggingFaceEmbeddings(model_name="NeuML/pubmedbert-base-embeddings")
+embeddings = HuggingFaceEmbeddings(model_name="FremyCompany/BioLORD-2023")
 
 # ============================================
 # RAG SETUP - FIXED PERSISTENCE
@@ -244,7 +244,7 @@ def search_rag_database(query: str, num_results: int = 10) -> str:
     Returns:
         Formatted search results with appropriate detail level
     """
-    print(f"🔎 Searching RAG database for: '{query}'")
+    print(f"Searching RAG database for: '{query}'")
     # Clean up query - remove "PMID:" prefix if present
     clean_query = query.replace("PMID:", "").replace("pmid:", "").strip()
     # Check if this is a PMID query
@@ -426,6 +426,81 @@ def check_rag_for_topic(keywords: str) -> str:
 
 check_rag_for_topic_tool = tool(check_rag_for_topic)
 
+def remove_from_rag_database(identifier: str, search_type: str = "auto") -> str:
+    """
+    Remove entries from the RAG database based on PMID or query.
+    
+    Args:
+        identifier: Either a PMID (or comma-separated PMIDs) or search keywords
+        search_type: "pmid", "query", or "auto" (auto-detect)
+    
+    Returns:
+        Summary of deletion operation
+    """
+    print(f"Attempting to remove from database: '{identifier}' (type: {search_type})")
+    # Auto-detect if this is a PMID
+    if search_type == "auto":
+        clean_id = identifier.replace("PMID:", "").replace("pmid:", "").strip()
+        if all(part.strip().isdigit() for part in clean_id.split(',')):
+            search_type = "pmid"
+        else:
+            search_type = "query"
+    try:
+        collection = vectorstore._collection
+        if search_type == "pmid":
+            # Remove by PMID(s)
+            pmids = [p.strip() for p in identifier.replace("PMID:", "").replace("pmid:", "").strip().split(',')]
+            total_deleted = 0
+            for pmid in pmids:
+                # Get all documents with this PMID
+                results = collection.get(
+                    where={"pmid": pmid}
+                )
+                if results and results['ids']:
+                    # Delete all chunks for this PMID
+                    collection.delete(ids=results['ids'])
+                    deleted_count = len(results['ids'])
+                    total_deleted += deleted_count
+                    print(f"  ✓ Deleted {deleted_count} chunks for PMID: {pmid}")
+                else:
+                    print(f"  ⚠ No documents found for PMID: {pmid}")
+            if total_deleted > 0:
+                return f"Successfully deleted {total_deleted} chunks from {len(pmids)} PMID(s)"
+            else:
+                return f"No documents found for PMIDs: {', '.join(pmids)}"
+        elif search_type == "query":
+            # Remove by similarity search
+            # First, find relevant documents
+            results = vectorstore.similarity_search(identifier, k=20)
+            if not results:
+                return f"No documents found matching query: '{identifier}'"
+            # Group by PMID to show what will be deleted
+            pmids_to_delete = {}
+            for doc in results:
+                pmid = doc.metadata.get("pmid", "unknown")
+                title = doc.metadata.get("title", "Unknown")
+                if pmid not in pmids_to_delete:
+                    pmids_to_delete[pmid] = title
+            # Confirm deletion
+            output = f"Found {len(pmids_to_delete)} paper(s) matching '{identifier}':\n"
+            for pmid, title in pmids_to_delete.items():
+                output += f"  - PMID: {pmid} | {title[:60]}...\n"
+            # Delete all chunks for these PMIDs
+            total_deleted = 0
+            for pmid in pmids_to_delete.keys():
+                results = collection.get(
+                    where={"pmid": pmid}
+                )
+                if results and results['ids']:
+                    collection.delete(ids=results['ids'])
+                    total_deleted += len(results['ids'])
+            output += f"\nDeleted {total_deleted} total chunks from {len(pmids_to_delete)} papers."
+            return output
+    except Exception as e:
+        return f"Error removing from database: {e}"
+
+remove_from_rag_tool = tool(remove_from_rag_database)
+
 def get_database_stats() -> str:
     """Get statistics about the RAG database."""
     try:
@@ -482,6 +557,12 @@ IMPORTANT PAPER RETRIEVAL RULES:
    - For "what does [paper] say about X": First retrieve the specific paper by PMID
    - For general topics: Use keyword search
 
+DELETION RULES:
+    - When asked to remove/delete papers, use 'remove_from_rag_tool'
+    - Can delete by PMID (preferred) or by search query
+    - Always confirm what will be deleted before proceeding
+    - Inform user of deletion results
+
 WORKFLOW:
 1. Check local database with 'check_rag_for_topic_tool'
 2. For existing papers:
@@ -511,6 +592,7 @@ tools = [
     search_rag_database_tool,
     check_rag_for_topic_tool,
     get_database_stats_tool,
+    remove_from_rag_tool
 ]
 
 agent = create_react_agent(
