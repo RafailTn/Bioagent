@@ -357,7 +357,7 @@ def main():
     geo_stats = get_geo_database_stats()
     print(f"{geo_stats}\n")
     
-    config = {"configurable": {"thread_id": "cli-thread"}}
+    config = {"configurable": {"thread_id": "cli-thread"}, "recursion_limit":50}
     
     while True:
         try:
